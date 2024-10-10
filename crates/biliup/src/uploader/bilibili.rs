@@ -3,6 +3,8 @@ use crate::uploader::credential::LoginInfo;
 use serde::ser::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+
 use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
 use std::str::FromStr;
@@ -85,7 +87,6 @@ pub struct Studio {
 
     // #[clap(long, default_value = "0")]
     // pub act_reserve_create: u8,
-
     /// 是否开启杜比音效, 0-关闭 1-开启
     #[clap(long, default_value = "0")]
     #[serde(default)]
@@ -110,17 +111,31 @@ pub struct Studio {
     #[clap(skip)]
     pub aid: Option<u64>,
 
+    /// 是否开启精选评论，仅提交接口为app时可用
     #[clap(long)]
     #[serde(default)]
     pub up_selection_reply: bool,
 
+    /// 是否关闭评论，仅提交接口为app时可用
     #[clap(long)]
     #[serde(default)]
     pub up_close_reply: bool,
 
+    /// 是否关闭弹幕，仅提交接口为app时可用
     #[clap(long)]
     #[serde(default)]
     pub up_close_danmu: bool,
+    // #[clap(long)]
+    // #[serde(default)]
+    // pub submit_by_app: bool,
+    /// 自定义提交参数
+    #[clap(long, value_parser = parse_extra_fields)]
+    #[serde(flatten)]
+    pub extra_fields: Option<HashMap<String, Value>>,
+}
+
+fn parse_extra_fields(s: &str) -> std::result::Result<HashMap<String, Value>, String> {
+    serde_json::from_str(s).map_err(|e| e.to_string())
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -146,7 +161,7 @@ impl Archive {
             0 => format!("\x1b[1;92m{}\x1b[0m", self.state_desc),
             -2 => format!("\x1b[1;91m{}\x1b[0m", self.state_desc),
             -30 => format!("\x1b[1;93m{}\x1b[0m", self.state_desc),
-            _ => format!("{}", self.desc),
+            _ => self.desc.to_string(),
         };
         format!("{}\t{}\t{}", self.bvid, self.title, status_string)
     }
@@ -194,6 +209,9 @@ impl FromStr for Vid {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let s = s.trim();
+        if s.len() < 3 {
+            return s.parse::<u64>().map(Vid::Aid);
+        }
         match &s[..2] {
             "BV" => Ok(Vid::Bvid(s.to_string())),
             "av" => Ok(Vid::Aid(s[2..].parse()?)),
@@ -234,6 +252,51 @@ impl BiliBili {
         info!("{:?}", ret);
         if ret.code == 0 {
             info!("投稿成功");
+            Ok(ret)
+        } else {
+            Err(Kind::Custom(format!("{:?}", ret)))
+        }
+    }
+
+    pub async fn submit_by_app(&self, studio: &Studio) -> Result<ResponseData> {
+        let payload = {
+            let mut payload = json!({
+                "access_key": self.login_info.token_info.access_token,
+                "appkey": crate::credential::AppKeyStore::BiliTV.app_key(),
+                "build": 7800300,
+                "c_locale": "zh-Hans_CN",
+                "channel": "bili",
+                "disable_rcmd": 0,
+                "mobi_app": "android",
+                "platform": "android",
+                "s_locale": "zh-Hans_CN",
+                "statistics": "\"appId\":1,\"platform\":3,\"version\":\"7.80.0\",\"abtest\":\"\"",
+                "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            });
+
+            let urlencoded = serde_urlencoded::to_string(&payload)?;
+            let sign = crate::credential::Credential::sign(
+                &urlencoded,
+                crate::credential::AppKeyStore::BiliTV.appsec(),
+            );
+            payload["sign"] = Value::from(sign);
+            payload
+        };
+
+        let ret: ResponseData = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 BiliDroid/7.80.0 (bbcallen@gmail.com) os/android model/MI 6 mobi_app/android build/7800300 channel/bili innerVer/7800310 osVer/13 network/2")
+            .timeout(Duration::new(60, 0))
+            .build()?
+            .post("https://member.bilibili.com/x/vu/app/add")
+            .query(&payload)
+            .json(studio)
+            .send()
+            .await?
+            .json()
+            .await?;
+        info!("{:?}", ret);
+        if ret.code == 0 {
+            info!("APP接口投稿成功");
             Ok(ret)
         } else {
             Err(Kind::Custom(format!("{:?}", ret)))

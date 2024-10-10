@@ -1,4 +1,4 @@
-use crate::cli::UploadLine;
+use crate::cli::{SubmitOption, UploadLine};
 use anyhow::{anyhow, Context, Result};
 use biliup::client::StatelessClient;
 use biliup::error::Kind;
@@ -70,6 +70,7 @@ pub async fn upload_by_command(
     video_path: Vec<PathBuf>,
     line: Option<UploadLine>,
     limit: usize,
+    submit: SubmitOption,
 ) -> Result<()> {
     let bili = login_by_cookies(user_cookie).await?;
     if studio.title.is_empty() {
@@ -81,7 +82,19 @@ pub async fn upload_by_command(
     }
     cover_up(&mut studio, &bili).await?;
     studio.videos = upload(&video_path, &bili, line, limit).await?;
-    bili.submit(&studio).await?;
+
+    // if studio.submit_by_app {
+    //     bili.submit_by_app(&studio).await?;
+    // }
+    // else {
+    //     bili.submit(&studio).await?;
+    // }
+    // 说不定会适配 web 呢...?
+    match submit {
+        SubmitOption::App => bili.submit_by_app(&studio).await?,
+        _ => bili.submit(&studio).await?,
+    };
+
     Ok(())
 }
 
@@ -157,7 +170,7 @@ pub async fn list(
 
     let bilibili = login_by_cookies(user_cookie).await?;
     bilibili
-        .all_archives(&status)
+        .all_archives(status)
         .await?
         .iter()
         .for_each(|arc| println!("{}", arc.to_string_pretty()));
@@ -205,13 +218,17 @@ pub async fn upload(
     let mut videos = Vec::new();
     let client = StatelessClient::default();
     let line = match line {
-        Some(UploadLine::Kodo) => line::kodo(),
         Some(UploadLine::Bda2) => line::bda2(),
         Some(UploadLine::Ws) => line::ws(),
         Some(UploadLine::Qn) => line::qn(),
-        Some(UploadLine::Cos) => line::cos(),
-        Some(UploadLine::CosInternal) => line::cos_internal(),
+        // Some(UploadLine::Kodo) => line::kodo(),
+        // Some(UploadLine::Cos) => line::cos(),
+        // Some(UploadLine::CosInternal) => line::cos_internal(),
         Some(UploadLine::Bldsa) => line::bldsa(),
+        Some(UploadLine::Tx) => line::tx(),
+        Some(UploadLine::Txa) => line::txa(),
+        Some(UploadLine::Bda) => line::bda(),
+        Some(UploadLine::Alia) => line::alia(),
         None => Probe::probe(&client.client).await.unwrap_or_default(),
     };
     // let line = line::kodo();
@@ -271,7 +288,22 @@ pub async fn login_by_sms(credential: Credential) -> Result<LoginInfo> {
     let phone: u64 = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("请输入手机号")
         .interact_text()?;
-    let res = credential.send_sms(phone, country_code).await?;
+    let res = credential
+        .send_sms_handle_recaptcha(phone, country_code, |url| async move {
+            println!("{url}");
+            println!("请复制此链接至浏览器打开并启动开发者工具，完成滑动验证后查看网络请求");
+
+            let challenge: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("请输入get.php响应中的challenge值")
+                .interact_text()?;
+
+            let valiate: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("请输入ajax.php响应中的validate值")
+                .interact_text()?;
+
+            Ok((challenge, valiate))
+        })
+        .await?;
     let input: u32 = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("请输入验证码")
         .interact_text()?;

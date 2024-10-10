@@ -51,12 +51,14 @@ pub enum Extension {
     Ts,
 }
 
+pub type CallbackFn = Box<dyn Fn(&str) + Send>;
+
 impl Site {
     pub async fn download(
         &mut self,
         fmt_file_name: &str,
         segment: Segmentable,
-        hook: Option<Box<dyn Fn(&str) + Send>>,
+        hook: Option<CallbackFn>,
     ) -> downloader::error::Result<()> {
         let fmt_file_name = fmt_file_name.replace("{title}", &self.title);
         self.client
@@ -73,7 +75,7 @@ impl Site {
             }
             Extension::Ts => {
                 let file = LifecycleFile::new(&fmt_file_name, "ts", hook);
-                hls::download(&self.direct_url, &self.client, &file.fmt_file_name, segment).await?
+                hls::download(&self.direct_url, &self.client, file, segment).await?
             }
         }
         Ok(())
